@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Example Page</title>
+</head>
+
+<body>
+    <h1>Example Page</h1>
+    <div id="approot">
+
+    </div>
+    <script type="module">
+        import Ntred from './selfdep/index.js';
+        window.Ntred = Ntred;
+
+        let mainapp = Ntred.create((tred, app) => {
+            const [count, setCount] = app.useState(0);
+            app.useEvent('increment', () => {
+                setCount(c => c + 1);
+            });
+            tred(() => {
+                console.log('count changed:', count);
+            }, [count]);
+            return `<div>Count = ${count}</div>
+                <button data-click="increment">Click</button>
+            `;
+        });
+        mainapp.mount(document.querySelector('#approot'));
+        mainapp.run(1000 / 10);
+    </script>
+</body>
+
+</html>

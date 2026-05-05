@@ -1,2 +1,3 @@
-# ntredjs
-React-ish UI workflow experiment
+# Ntred.js
+
+React-ish UI workflow experiment.
