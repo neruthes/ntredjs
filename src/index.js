@@ -76,6 +76,29 @@ class Ntred {
         return this;
     }
 
+
+    listen(evname, el) {
+        if (!el) return this;
+
+        el.addEventListener(evname, (e) => {
+            // Find the closest ancestor with a data-click attribute
+            const target = e.target.closest('[data-click]');
+
+            // If no data-click attribute or if the action is explicitly 'none', ignore
+            if (!target || target.dataset.click === 'none') return;
+
+            const action = target.dataset.click;
+            const handler = this._handlers[action];
+
+            if (handler) {
+                // If the action is found in this component's handlers, execute it
+                handler(e);
+            }
+        });
+
+        return this; // Maintain chainability
+    }
+
     // -------------------------
     // EFFECT SYSTEM
     // -------------------------
