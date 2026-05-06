@@ -79,7 +79,7 @@ class Ntred {
     // -------------------------
     // EFFECT SYSTEM
     // -------------------------
-    run(fps = 1000 / 30) {
+    run(spin_gap = 1000 / 30) {
         if (this._interval) return;
 
         this._interval = setInterval(() => {
@@ -90,7 +90,7 @@ class Ntred {
             this._effectIndex = 0;
             this._stateIndex = 0;
 
-            const react = (effect, deps) => {
+            const useEffect = (effect, deps) => {
                 const i = this._effectIndex++;
 
                 const prev = this._effects[i];
@@ -115,7 +115,7 @@ class Ntred {
             };
 
             // run app
-            const view = this.main(react, this);
+            const view = this.main(useEffect, this);
 
             // render commit phase
             if (this._root && typeof view === 'string') {
@@ -126,7 +126,7 @@ class Ntred {
             }
 
             this._spinlock = false;
-        }, fps);
+        }, spin_gap);
     }
 
     stop() {

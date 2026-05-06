@@ -16,20 +16,24 @@
         import Ntred from './selfdep/index.js';
         window.Ntred = Ntred;
 
-        let mainapp = Ntred.create((tred, app) => {
+        let mainapp = Ntred.create((useEffect, app) => {
             const [count, setCount] = app.useState(0);
-            app.useEvent('increment', () => {
+            app.useEvent('up', () => {
                 setCount(c => c + 1);
             });
-            tred(() => {
+            app.useEvent('down', () => {
+                setCount(c => c - 1);
+            });
+            useEffect(() => {
                 console.log('count changed:', count);
             }, [count]);
             return `<div>Count = ${count}</div>
-                <button data-click="increment">Click</button>
-            `;
+        <button data-click="down">-</button>
+        <button data-click="up">+</button>
+    `;
         });
         mainapp.mount(document.querySelector('#approot'));
-        mainapp.run(1000 / 10);
+        mainapp.run(1000 / 120);
     </script>
 </body>
 
