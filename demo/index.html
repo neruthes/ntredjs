@@ -5,13 +5,30 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Example Page</title>
+    <style>
+        html, body {
+            font-size: 19px;
+        }
+        [data-polarity] {
+            transition: all 160ms ease;
+        }
+        button {
+            min-width: 4em;
+        }
+    </style>
 </head>
 
 <body>
     <h1>Example Page</h1>
-    <div id="approot">
-
+    <div class="" style="width: 290px;">
+        <div id="approot">
+        </div>
+        <div id="extra">
+        </div>
     </div>
+
+
+
     <script type="module">
         import Ntred from './selfdep/index.js';
         window.Ntred = Ntred;
@@ -25,7 +42,17 @@
                 setCount(c => c - 1);
             });
             useEffect(() => {
+                document.querySelector('#extra').innerHTML = `<div style="display: flex;">
+                    <div data-polarity="even">Even</div>
+                    <div style="flex-grow: 1;"></div>
+                    <div data-polarity="odd">Odd</div>
+                </div>`;
+            }, []);
+            useEffect(() => {
                 console.log('count changed:', count);
+                const is_even = count % 2 === 0;
+                document.querySelector('#extra  [data-polarity="even"]').style.opacity = is_even ? '1' : '0';
+                document.querySelector('#extra  [data-polarity="odd"]').style.opacity = !is_even ? '1' : '0';
             }, [count]);
             return `<div>Count = ${count}</div>
         <button data-click="down">-</button>
