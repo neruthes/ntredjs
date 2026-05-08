@@ -6,12 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Example Page</title>
     <style>
-        html, body {
+        html,
+        body {
             font-size: 19px;
         }
-        [data-polarity] {
+
+        div {
             transition: all 160ms ease;
         }
+
         button {
             min-width: 4em;
         }
@@ -21,16 +24,20 @@
 <body>
     <h1>Example Page</h1>
     <div class="" style="width: 290px;">
-        <div id="approot">
-        </div>
-        <div id="extra">
-        </div>
+        <div id="approot"></div>
+        <!-- <div id="extra"></div> -->
     </div>
 
 
 
     <script type="module">
         import Ntred from './selfdep/index.js';
+        import morphdom from 'https://unpkg.com/morphdom@2.7.8/dist/morphdom-esm.js';
+
+
+
+
+
         window.Ntred = Ntred;
 
         let mainapp = Ntred.create((useEffect, app) => {
@@ -41,26 +48,24 @@
             app.useEvent('down', () => {
                 setCount(c => c - 1);
             });
-            useEffect(() => {
-                document.querySelector('#extra').innerHTML = `<div style="display: flex;">
-                    <div data-polarity="even">Even</div>
+            let mydom = `<div>
+                <div>Count = ${count}</div>
+                <div>
+                    <button data-click="down">-</button>
+                    <button data-click="up">+</button>
+                </div>
+                <div style="display: flex;">
+                    <div style="opacity: ${1 - (count % 2)};">Even</div>
                     <div style="flex-grow: 1;"></div>
-                    <div data-polarity="odd">Odd</div>
-                </div>`;
-            }, []);
-            useEffect(() => {
-                console.log('count changed:', count);
-                const is_even = count % 2 === 0;
-                document.querySelector('#extra  [data-polarity="even"]').style.opacity = is_even ? '1' : '0';
-                document.querySelector('#extra  [data-polarity="odd"]').style.opacity = !is_even ? '1' : '0';
-            }, [count]);
-            return `<div>Count = ${count}</div>
-        <button data-click="down">-</button>
-        <button data-click="up">+</button>
-    `;
+                    <div style="opacity: ${count % 2};">Odd</div>
+                </div>
+            </div>`;
+            return () => { 
+                morphdom(app._root, mydom.trim(), { childrenOnly: true }); // childrenOnly not working. Only first div (count = xx) is rendered.
+            };
         });
         mainapp.mount(document.querySelector('#approot'));
-        mainapp.run(1000 / 120);
+        mainapp.run();
     </script>
 </body>
 
