@@ -2,24 +2,76 @@ class Ntred {
     constructor(main) {
         this.main = main;
 
-        // render
+        // -------------------------
+        // RENDER STATE
+        // -------------------------
         this._root = null;
         this._prevView = '';
 
-        // loop control
-        this._interval = null;
-        this._spinlock = false;
+        // -------------------------
+        // SCHEDULER STATE
+        // -------------------------
 
-        // effects (React-like)
+        /**
+         * True while a render pass is executing.
+         * Prevents reentrant rendering.
+         */
+        this._rendering = false;
+
+        /**
+         * True if a RAF callback has already been scheduled.
+         * Prevents duplicate RAF enqueueing.
+         */
+        this._scheduled = false;
+
+        /**
+         * True if another render is needed.
+         * This flag is NEVER cleared accidentally.
+         */
+        this._needsRender = false;
+
+        /**
+         * Stops future work after stop()
+         */
+        this._stopped = false;
+
+        // -------------------------
+        // EFFECT SYSTEM
+        // -------------------------
+
+        /**
+         * Stores previous dependency arrays.
+         */
         this._effects = [];
+
+        /**
+         * Stores cleanup functions.
+         */
         this._cleanups = [];
+
+        /**
+         * Effects collected during current render.
+         * Flushed AFTER commit phase.
+         */
+        this._pendingEffects = [];
+
         this._effectIndex = 0;
 
-        // state (hook-like)
+        // -------------------------
+        // STATE SYSTEM
+        // -------------------------
+
         this._states = [];
         this._stateIndex = 0;
 
-        // event delegation
+        // -------------------------
+        // EVENTS
+        // -------------------------
+
+        /**
+         * Always replaced every render.
+         * Prevents stale closures.
+         */
         this._handlers = {};
     }
 
@@ -27,37 +79,18 @@ class Ntred {
         return new Ntred(main);
     }
 
+    // =========================================================
+    // STATE
+    // =========================================================
 
-    /**
-     * Delivers a named event to the app. 
-     * Guarantees safety by yielding if a rerender is in progress.
-     */
-    async ping(name, params = {}) {
-        const handler = this._handlers[name];
-        if (!handler) return;
-
-        // If the spinlock is active, we yield the event loop and try again.
-        // This prevents logic from running mid-render.
-        while (this._spinlock) {
-            await new Promise(resolve => requestAnimationFrame(resolve));
-        }
-
-        // Now that the lock is released, we can safely execute.
-        handler(params);
-        this.scheduleUpdate();
-    }
-
-
-
-
-    // -------------------------
-    // STATE (useState)
-    // -------------------------
     useState(initial) {
         const i = this._stateIndex++;
 
         if (this._states[i] === undefined) {
-            this._states[i] = typeof initial === 'function' ? initial() : initial;
+            this._states[i] =
+                typeof initial === 'function'
+                    ? initial()
+                    : initial;
         }
 
         const setState = (value) => {
@@ -68,6 +101,10 @@ class Ntred {
 
             if (!Object.is(this._states[i], next)) {
                 this._states[i] = next;
+
+                // CHANGED:
+                // Never render immediately.
+                // Always schedule safely.
                 this.scheduleUpdate();
             }
         };
@@ -75,145 +112,286 @@ class Ntred {
         return [this._states[i], setState];
     }
 
-    // -------------------------
-    // EVENT HANDLERS
-    // -------------------------
+    // =========================================================
+    // EVENTS
+    // =========================================================
+
     useEvent(name, fn) {
-        if (!this._handlers[name]) {
-            this._handlers[name] = fn;
-        }
+        // CHANGED:
+        // Always replace handler every render.
+        // Prevents stale closure bugs.
+        this._handlers[name] = fn;
     }
 
+    async ping(name, params = {}) {
+        if (this._stopped) return;
+
+        const handler = this._handlers[name];
+        if (!handler) return;
+
+        // CHANGED:
+        // Wait until render fully completes.
+        // Uses microtask yielding instead of RAF.
+        while (this._rendering && !this._stopped) {
+            await Promise.resolve();
+        }
+
+        handler(params);
+
+        this.scheduleUpdate();
+    }
+
+    // =========================================================
+    // SCHEDULER
+    // =========================================================
 
     scheduleUpdate() {
-        if (this._dirty) return; // Already scheduled
-        this._dirty = true;
+        if (this._stopped) return;
+
+        // CHANGED:
+        // Mark render required.
+        // This cannot be lost.
+        this._needsRender = true;
+
+        // Already scheduled -> do nothing
+        if (this._scheduled) return;
+
+        this._scheduled = true;
 
         requestAnimationFrame(() => {
-            this.atomicRerenderAttempt();
-            this._dirty = false;
+            this._scheduled = false;
 
-            // If something made it dirty DURING the render (like an effect),
-            // schedule another update for the next frame.
-            if (this._dirty) {
-                this._dirty = false;
+            // App stopped while waiting
+            if (this._stopped) return;
+
+            // Nothing needed
+            if (!this._needsRender) return;
+
+            // Consume render request
+            this._needsRender = false;
+
+            this.atomicRerenderAttempt();
+
+            // CHANGED:
+            // If state changed DURING render/effects,
+            // schedule another frame safely.
+            if (this._needsRender) {
                 this.scheduleUpdate();
             }
         });
     }
 
+    // =========================================================
+    // MOUNTING
+    // =========================================================
+
     mount(el) {
         this._root = el;
-        // Wrapping event listener to trigger re-render
+
+        // CHANGED:
+        // Unified delegated event handling.
         this._root.addEventListener('click', (e) => {
             const target = e.target.closest('[data-click]');
             if (!target) return;
-            const handler = this._handlers[target.dataset.click];
-            if (handler) {
-                handler(e);
-                this.scheduleUpdate(); // Ensure click-driven state changes are caught
-            }
+
+            const action = target.dataset.click;
+
+            if (!action || action === 'none') return;
+
+            const handler = this._handlers[action];
+
+            if (!handler) return;
+
+            handler(e);
+
+            this.scheduleUpdate();
         });
+
         return this;
     }
-
 
     listen(evname, el) {
         if (!el) return this;
 
-        // TODO: Really customize handling depending on evname
         el.addEventListener(evname, (e) => {
-            // Find the closest ancestor with a data-click attribute
             const target = e.target.closest('[data-click]');
 
-            // If no data-click attribute or if the action is explicitly 'none', ignore
-            if (!target || target.dataset.click === 'none') return;
+            if (!target) return;
 
             const action = target.dataset.click;
+
+            if (!action || action === 'none') return;
+
             const handler = this._handlers[action];
 
-            if (handler) {
-                // If the action is found in this component's handlers, execute it
-                handler(e);
-                this.scheduleUpdate();
-            }
+            if (!handler) return;
+
+            handler(e);
+
+            this.scheduleUpdate();
         });
 
-        return this; // Maintain chainability
+        return this;
     }
 
-    // -------------------------
-    // EFFECT SYSTEM
-    // -------------------------
-    atomicRerenderAttempt() {
-        if (this._spinlock) return;
-        this._spinlock = true;
-        // console.log('atomicRerenderAttempt()');
+    // =========================================================
+    // EFFECTS
+    // =========================================================
 
-        // reset hook cursors each frame
-        this._effectIndex = 0;
-        this._stateIndex = 0;
+    _registerEffect(effect, deps) {
+        const i = this._effectIndex++;
 
-        const useEffect = (effect, deps) => {
-            const i = this._effectIndex++;
+        const prev = this._effects[i];
 
-            const prev = this._effects[i];
+        const changed =
+            !prev ||
+            deps.length !== prev.length ||
+            deps.some((d, j) => !Object.is(d, prev[j]));
 
-            const changed =
-                !prev ||
-                deps.length !== prev.length ||
-                deps.some((d, j) => !Object.is(d, prev[j]));
+        if (!changed) return;
 
-            if (changed) {
-                // cleanup previous effect
-                if (this._cleanups[i]) {
+        // CHANGED:
+        // DO NOT run effects during render.
+        // Queue them for post-commit execution.
+        this._pendingEffects.push(() => {
+
+            // Cleanup previous effect first
+            if (this._cleanups[i]) {
+                try {
                     this._cleanups[i]();
+                } catch (err) {
+                    console.error('Effect cleanup failed:', err);
                 }
-
-                const cleanup = effect();
-
-                this._effects[i] = deps;
-                this._cleanups[i] =
-                    typeof cleanup === 'function' ? cleanup : null;
             }
-        };
 
-        // run app
-        const view = this.main(useEffect, this);
+            let cleanup = null;
 
-        // console.log('view');
-        // console.log(view);
-        // console.log('typeof view');
-        // console.log(typeof view);
-
-        // render commit phase
-        if (this._root && typeof view === 'string') {
-            if (view !== this._prevView) {
-                this._root.innerHTML = view;
-                this._prevView = view;
+            try {
+                cleanup = effect();
+            } catch (err) {
+                console.error('Effect failed:', err);
             }
-        }
-        if (typeof view === 'function') {
-            view();
-        }
 
-        this._spinlock = false;
+            this._effects[i] = deps;
+
+            this._cleanups[i] =
+                typeof cleanup === 'function'
+                    ? cleanup
+                    : null;
+        });
     }
+
+    _flushEffects() {
+        const pending = this._pendingEffects;
+        this._pendingEffects = [];
+
+        for (const effect of pending) {
+            effect();
+        }
+    }
+
+    // =========================================================
+    // RENDERING
+    // =========================================================
+
+    atomicRerenderAttempt() {
+        // CHANGED:
+        // Hard reentrancy protection.
+        if (this._rendering) return;
+
+        this._rendering = true;
+
+        try {
+
+            // Reset hook cursors
+            this._effectIndex = 0;
+            this._stateIndex = 0;
+
+            // CHANGED:
+            // Handlers recreated every render
+            // to avoid stale closure issues.
+            this._handlers = {};
+
+            // Render app
+            const view = this.main(
+                this._registerEffect.bind(this),
+                this
+            );
+
+            // -------------------------
+            // COMMIT PHASE
+            // -------------------------
+
+            if (this._root && typeof view === 'string') {
+                if (view !== this._prevView) {
+                    this._root.innerHTML = view;
+                    this._prevView = view;
+                }
+            }
+
+            // Optional imperative render callback
+            if (typeof view === 'function') {
+                view();
+            }
+
+        } catch (err) {
+
+            // CHANGED:
+            // Prevent permanent deadlock.
+            console.error('Render failed:', err);
+
+        } finally {
+
+            // CHANGED:
+            // Lock ALWAYS released safely.
+            this._rendering = false;
+        }
+
+        // -------------------------
+        // EFFECT PHASE
+        // -------------------------
+
+        // CHANGED:
+        // Effects run AFTER commit.
+        this._flushEffects();
+    }
+
+    // =========================================================
+    // LIFECYCLE
+    // =========================================================
+
     run() {
-        if (this._interval) return;
+        if (this._stopped === false && this._scheduled) {
+            return;
+        }
+
+        this._stopped = false;
+
         this.scheduleUpdate();
-        this._interval = 10;
-        // Nothing happens as we migrate from polling to reacting
+
+        return this;
     }
 
     stop() {
-        clearInterval(this._interval);
-        this._interval = null;
+        this._stopped = true;
 
-        // cleanup all effects
-        this._cleanups.forEach(fn => fn && fn());
+        // Prevent future scheduled work
+        this._scheduled = false;
+        this._needsRender = false;
+
+        // Cleanup effects safely
+        for (const fn of this._cleanups) {
+            if (!fn) continue;
+
+            try {
+                fn();
+            } catch (err) {
+                console.error('Cleanup failed:', err);
+            }
+        }
+
+        return this;
     }
 }
 
 export default Ntred;
-
