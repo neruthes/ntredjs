@@ -1,78 +1,34 @@
+/**
+ * Ntred: A Reactive, Immediate-Mode UI Library
+ * Version: 2.0 (Atomic Queue Edition)
+ */
 class Ntred {
     constructor(main) {
         this.main = main;
 
-        // -------------------------
-        // RENDER STATE
-        // -------------------------
+        // --- RENDER & DOM ---
         this._root = null;
         this._prevView = '';
 
-        // -------------------------
-        // SCHEDULER STATE
-        // -------------------------
-
-        /**
-         * True while a render pass is executing.
-         * Prevents reentrant rendering.
-         */
+        // --- SCHEDULER & LOCKS ---
         this._rendering = false;
-
-        /**
-         * True if a RAF callback has already been scheduled.
-         * Prevents duplicate RAF enqueueing.
-         */
         this._scheduled = false;
-
-        /**
-         * True if another render is needed.
-         * This flag is NEVER cleared accidentally.
-         */
         this._needsRender = false;
-
-        /**
-         * Stops future work after stop()
-         */
         this._stopped = false;
 
-        // -------------------------
-        // EFFECT SYSTEM
-        // -------------------------
+        // --- ATOMIC QUEUES ---
+        this._pingQueue = [];      // External pings
+        this._pendingEffects = [];   // Post-commit work
 
-        /**
-         * Stores previous dependency arrays.
-         */
+        // --- PERMANENT HOOK STORAGE ---
         this._effects = [];
-
-        /**
-         * Stores cleanup functions.
-         */
         this._cleanups = [];
-
-        /**
-         * Effects collected during current render.
-         * Flushed AFTER commit phase.
-         */
-        this._pendingEffects = [];
-
-        this._effectIndex = 0;
-
-        // -------------------------
-        // STATE SYSTEM
-        // -------------------------
-
         this._states = [];
-        this._stateIndex = 0;
-
-        // -------------------------
-        // EVENTS
-        // -------------------------
-
-        /**
-         * Always replaced every render.
-         * Prevents stale closures.
-         */
         this._handlers = {};
+
+        // --- ITERATION CURSORS ---
+        this._effectIndex = 0;
+        this._stateIndex = 0;
     }
 
     static create(main) {
@@ -80,31 +36,20 @@ class Ntred {
     }
 
     // =========================================================
-    // STATE
+    // STATE SYSTEM (useState)
     // =========================================================
-
     useState(initial) {
         const i = this._stateIndex++;
 
         if (this._states[i] === undefined) {
-            this._states[i] =
-                typeof initial === 'function'
-                    ? initial()
-                    : initial;
+            this._states[i] = typeof initial === 'function' ? initial() : initial;
         }
 
         const setState = (value) => {
-            const next =
-                typeof value === 'function'
-                    ? value(this._states[i])
-                    : value;
+            const next = typeof value === 'function' ? value(this._states[i]) : value;
 
             if (!Object.is(this._states[i], next)) {
                 this._states[i] = next;
-
-                // CHANGED:
-                // Never render immediately.
-                // Always schedule safely.
                 this.scheduleUpdate();
             }
         };
@@ -113,283 +58,161 @@ class Ntred {
     }
 
     // =========================================================
-    // EVENTS
+    // EVENT SYSTEM (useEvent & Ping)
     // =========================================================
-
     useEvent(name, fn) {
-        // CHANGED:
-        // Always replace handler every render.
-        // Prevents stale closure bugs.
+        // Updated every render to keep closures fresh
         this._handlers[name] = fn;
     }
 
-    async ping(name, params = {}) {
+    /**
+     * Queues an intent from the outside world (e.g., Web Components, Timers).
+     * Consumed atomically by the render loop.
+     */
+    ping(name, params = {}) {
         if (this._stopped) return;
-
-        const handler = this._handlers[name];
-        if (!handler) return;
-
-        // CHANGED:
-        // Wait until render fully completes.
-        // Uses microtask yielding instead of RAF.
-        while (this._rendering && !this._stopped) {
-            await Promise.resolve();
-        }
-
-        handler(params);
-
+        this._pingQueue.push({ name, params });
         this.scheduleUpdate();
     }
 
     // =========================================================
     // SCHEDULER
     // =========================================================
-
     scheduleUpdate() {
         if (this._stopped) return;
-
-        // CHANGED:
-        // Mark render required.
-        // This cannot be lost.
         this._needsRender = true;
 
-        // Already scheduled -> do nothing
         if (this._scheduled) return;
-
         this._scheduled = true;
 
         requestAnimationFrame(() => {
             this._scheduled = false;
-
-            // App stopped while waiting
-            if (this._stopped) return;
-
-            // Nothing needed
-            if (!this._needsRender) return;
-
-            // Consume render request
-            this._needsRender = false;
-
+            if (this._stopped || !this._needsRender) return;
             this.atomicRerenderAttempt();
-
-            // CHANGED:
-            // If state changed DURING render/effects,
-            // schedule another frame safely.
-            if (this._needsRender) {
-                this.scheduleUpdate();
-            }
         });
     }
 
     // =========================================================
-    // MOUNTING
+    // THE RENDER LOOP (The Core Engine)
     // =========================================================
-
-    mount(el) {
-        this._root = el;
-
-        // CHANGED:
-        // Unified delegated event handling.
-        this._root.addEventListener('click', (e) => {
-            const target = e.target.closest('[data-click]');
-            if (!target) return;
-
-            const action = target.dataset.click;
-
-            if (!action || action === 'none') return;
-
-            const handler = this._handlers[action];
-
-            if (!handler) return;
-
-            handler(e);
-
-            this.scheduleUpdate();
-        });
-
-        return this;
-    }
-
-    listen(evname, el) {
-        if (!el) return this;
-
-        el.addEventListener(evname, (e) => {
-            const target = e.target.closest('[data-click]');
-
-            if (!target) return;
-
-            const action = target.dataset.click;
-
-            if (!action || action === 'none') return;
-
-            const handler = this._handlers[action];
-
-            if (!handler) return;
-
-            handler(e);
-
-            this.scheduleUpdate();
-        });
-
-        return this;
-    }
-
-    // =========================================================
-    // EFFECTS
-    // =========================================================
-
-    _registerEffect(effect, deps) {
-        const i = this._effectIndex++;
-
-        const prev = this._effects[i];
-
-        const changed =
-            !prev ||
-            deps.length !== prev.length ||
-            deps.some((d, j) => !Object.is(d, prev[j]));
-
-        if (!changed) return;
-
-        // CHANGED:
-        // DO NOT run effects during render.
-        // Queue them for post-commit execution.
-        this._pendingEffects.push(() => {
-
-            // Cleanup previous effect first
-            if (this._cleanups[i]) {
-                try {
-                    this._cleanups[i]();
-                } catch (err) {
-                    console.error('Effect cleanup failed:', err);
-                }
-            }
-
-            let cleanup = null;
-
-            try {
-                cleanup = effect();
-            } catch (err) {
-                console.error('Effect failed:', err);
-            }
-
-            this._effects[i] = deps;
-
-            this._cleanups[i] =
-                typeof cleanup === 'function'
-                    ? cleanup
-                    : null;
-        });
-    }
-
-    _flushEffects() {
-        const pending = this._pendingEffects;
-        this._pendingEffects = [];
-
-        for (const effect of pending) {
-            effect();
-        }
-    }
-
-    // =========================================================
-    // RENDERING
-    // =========================================================
-
     atomicRerenderAttempt() {
-        // CHANGED:
-        // Hard reentrancy protection.
         if (this._rendering) return;
-
         this._rendering = true;
+        this._needsRender = false;
 
         try {
+            // 1. CONSUME PING: Process ONE message per pass.
+            if (this._pingQueue.length > 0) {
+                const { name, params } = this._pingQueue.shift();
+                const handler = this._handlers[name];
+                if (handler) handler(params);
 
-            // Reset hook cursors
+                // If more remain, keep the chain alive
+                if (this._pingQueue.length > 0) this._needsRender = true;
+            }
+
+            // 2. PRE-RENDER: Reset cursors
             this._effectIndex = 0;
             this._stateIndex = 0;
 
-            // CHANGED:
-            // Handlers recreated every render
-            // to avoid stale closure issues.
-            this._handlers = {};
+            // 3. EXECUTE: Run main logic
+            const view = this.main(this._registerEffect.bind(this), this);
 
-            // Render app
-            const view = this.main(
-                this._registerEffect.bind(this),
-                this
-            );
-
-            // -------------------------
-            // COMMIT PHASE
-            // -------------------------
-
+            // 4. COMMIT: Update DOM
             if (this._root && typeof view === 'string') {
                 if (view !== this._prevView) {
+                    // Note: Ideally swap this with Morphdom/Idiomorph for node reuse
                     this._root.innerHTML = view;
                     this._prevView = view;
                 }
             }
-
-            // Optional imperative render callback
-            if (typeof view === 'function') {
-                view();
-            }
+            if (typeof view === 'function') view();
 
         } catch (err) {
-
-            // CHANGED:
-            // Prevent permanent deadlock.
-            console.error('Render failed:', err);
-
+            console.error('Render Cycle Failed:', err);
         } finally {
-
-            // CHANGED:
-            // Lock ALWAYS released safely.
             this._rendering = false;
         }
 
-        // -------------------------
-        // EFFECT PHASE
-        // -------------------------
-
-        // CHANGED:
-        // Effects run AFTER commit.
+        // 5. POST-COMMIT: Flush queued effects
         this._flushEffects();
+
+        // 6. RECURSION CHECK: If a handler/effect requested more work
+        if (this._needsRender) this.scheduleUpdate();
     }
 
     // =========================================================
-    // LIFECYCLE
+    // EFFECT SYSTEM
     // =========================================================
+    _registerEffect(effect, deps) {
+        const i = this._effectIndex++;
+        const prev = this._effects[i];
+        const changed = !prev || deps.some((d, j) => !Object.is(d, prev[j]));
+
+        if (changed) {
+            this._pendingEffects.push({ i, effect, deps });
+        }
+    }
+
+    _flushEffects() {
+        const queue = this._pendingEffects;
+        this._pendingEffects = [];
+
+        for (const { i, effect, deps } of queue) {
+            // Cleanup stale effect
+            if (this._cleanups[i]) {
+                try { this._cleanups[i](); } catch (e) { console.error(e); }
+            }
+            // Run fresh effect
+            const cleanup = effect();
+            this._effects[i] = deps;
+            this._cleanups[i] = typeof cleanup === 'function' ? cleanup : null;
+        }
+    }
+
+    // =========================================================
+    // MOUNTING & DELEGATION
+    // =========================================================
+    mount(el) {
+        this._root = el;
+        this._root.addEventListener('click', (e) => {
+            const target = e.target.closest('[data-click]');
+            if (!target || target.dataset.click === 'none') return;
+
+            const handler = this._handlers[target.dataset.click];
+            if (handler) {
+                handler(e);
+                this.scheduleUpdate();
+            }
+        });
+        return this;
+    }
+
+    // Listens for custom events (e.g. from Web Components)
+    listen(evname, el = this._root) {
+        if (!el) return this;
+        el.addEventListener(evname, (e) => {
+            const target = e.target.closest(`[data-${evname}]`);
+            if (!target) return;
+            const action = target.getAttribute(`data-${evname}`);
+            const handler = this._handlers[action];
+            if (handler) {
+                handler(e);
+                this.scheduleUpdate();
+            }
+        });
+        return this;
+    }
 
     run() {
-        if (this._stopped === false && this._scheduled) {
-            return;
-        }
-
         this._stopped = false;
-
         this.scheduleUpdate();
-
         return this;
     }
 
     stop() {
         this._stopped = true;
-
-        // Prevent future scheduled work
-        this._scheduled = false;
-        this._needsRender = false;
-
-        // Cleanup effects safely
-        for (const fn of this._cleanups) {
-            if (!fn) continue;
-
-            try {
-                fn();
-            } catch (err) {
-                console.error('Cleanup failed:', err);
-            }
-        }
-
+        this._cleanups.forEach(fn => fn && fn());
         return this;
     }
 }
