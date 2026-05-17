@@ -61,7 +61,7 @@
                 </div>
             </div>`;
             return () => { 
-                morphdom(app._root, mydom.trim(), { childrenOnly: true }); // childrenOnly not working. Only first div (count = xx) is rendered.
+                morphdom(app._root, mydom.trim(), { childrenOnly: true });
             };
         });
         mainapp.mount(document.querySelector('#approot'));
