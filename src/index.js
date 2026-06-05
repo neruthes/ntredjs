@@ -1,6 +1,8 @@
 /**
  * Ntred: A Reactive, Immediate-Mode UI Library
- * Version: 2.0 (Atomic Queue Edition)
+ * Copyright (c) 2026 Neruthes. 
+ * https://github.com/neruthes/ntredjs
+ * Released with the MIT License.
  */
 class Ntred {
     constructor(main) {
